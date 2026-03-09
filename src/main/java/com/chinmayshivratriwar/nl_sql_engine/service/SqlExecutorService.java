@@ -4,6 +4,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
+
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
@@ -35,6 +37,19 @@ public class SqlExecutorService {
                 && !upperSql.contains("MAX(") && !upperSql.contains("MIN(")) {
             throw new RuntimeException(
                     "Invalid SQL: GROUP BY used without aggregation function"
+            );
+        }
+
+        // Block multiple statements
+        String[] statements = sql.split(";");
+        long nonEmptyStatements = Arrays.stream(statements)
+                .map(String::trim)
+                .filter(statement -> !statement.isEmpty())
+                .count();
+
+        if (nonEmptyStatements > 1) {
+            throw new RuntimeException(
+                    "Multiple SQL statements not allowed. Ask one question at a time."
             );
         }
         log.info("Executing SQL: {}", sql);
