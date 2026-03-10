@@ -28,6 +28,7 @@ It returns:
 
 ## Architecture
 
+
 ```
 User (React UI)
       │
@@ -55,7 +56,8 @@ NlSqlService (@Cacheable — Caffeine)
       │
       └──► QueryResponse { question, generatedSql, results, executionTimeMs, fromCache }
 ```
-
+![LLD Diagram](docs/lld.png)
+> Full LLD diagram: [docs/lld.puml](docs/lld.puml)
 ---
 
 ## Design Decisions
