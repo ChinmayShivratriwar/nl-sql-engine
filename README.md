@@ -169,12 +169,20 @@ nl-sql-engine is running
 
 ## Sample Database Schema
 
-| Table | Columns |
-|-------|---------|
-| `employees` | id, name, department, salary, hire_date |
-| `projects` | id, name, budget, status, assigned_to, start_date |
+The engine auto-discovers all tables in the connected database via `information_schema` — no hardcoding required. Current demo database includes:
 
-> The engine auto-discovers any tables in the connected database — no hardcoding required.
+| Table | Key Columns |
+|-------|-------------|
+| `employees` | id, name, email, department, designation, salary, hire_date, location, status |
+| `departments` | id, name, head, budget, headcount, location |
+| `projects` | id, name, budget, spent, status, priority, assigned_to, start_date, end_date |
+| `salary_history` | id, employee_id, previous_salary, new_salary, increment_pct, reason, effective_date |
+| `transactions` | id, transaction_ref, employee_id, type, amount, currency, status, merchant, category |
+| `performance_reviews` | id, employee_id, reviewer_id, review_period, rating, technical_score, delivery_score, teamwork_score, promoted |
+
+### Example Questions You Can Ask
+- `Show me all engineers with salary above 90000`
+- `Which department has the highest average salary?`
 
 ## What's Next
 
