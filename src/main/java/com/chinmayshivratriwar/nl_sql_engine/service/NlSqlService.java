@@ -145,7 +145,11 @@ public class NlSqlService {
                     int asIndex = trimmed.toUpperCase().indexOf(" AS ");
                     return asIndex > 0 ? trimmed.substring(0, asIndex).trim() : trimmed;
                 })
+                .filter(col -> !col.isEmpty()) // ← add this
                 .collect(Collectors.joining(", "));
+
+        // Only inject GROUP BY if there are non-aggregated columns
+        if (groupByCols.isEmpty()) return sql;
 
         log.info("Auto-injecting GROUP BY: {}", groupByCols);
 
