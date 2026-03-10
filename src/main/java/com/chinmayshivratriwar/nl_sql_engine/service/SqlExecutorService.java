@@ -52,6 +52,22 @@ public class SqlExecutorService {
                     "Multiple SQL statements not allowed. Ask one question at a time."
             );
         }
+
+        // Remove everything between parentheses before checking
+        String sqlWithoutSubqueries = upperSql.replaceAll("\\(.*?\\)", "");
+
+        boolean hasAggregation = sqlWithoutSubqueries.contains("SUM(")
+                || sqlWithoutSubqueries.contains("COUNT(")
+                || sqlWithoutSubqueries.contains("AVG(")
+                || sqlWithoutSubqueries.contains("MAX(")
+                || sqlWithoutSubqueries.contains("MIN(");
+        boolean hasGroupBy = upperSql.contains("GROUP BY");
+
+        if (hasAggregation && !hasGroupBy) {
+            throw new RuntimeException(
+                    "Invalid SQL: Aggregation function used without GROUP BY clause."
+            );
+        }
         log.info("Executing SQL: {}", sql);
         return jdbcTemplate.queryForList(sql);
     }

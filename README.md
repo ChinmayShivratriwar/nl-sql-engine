@@ -167,6 +167,15 @@ nl-sql-engine is running
 
 ---
 
+## Sample Database Schema
+
+| Table | Columns |
+|-------|---------|
+| `employees` | id, name, department, salary, hire_date |
+| `projects` | id, name, budget, status, assigned_to, start_date |
+
+> The engine auto-discovers any tables in the connected database — no hardcoding required.
+
 ## What's Next
 
 - Dynamic datasource linking — users connect their own databases via host/credentials
