@@ -25,14 +25,6 @@ public class DataSourceConfig {
 
     @Bean
     public DataSource dataSource() {
-        log.info("=== DB CONNECTION DEBUG ===");
-        log.info("URL: {}", url);
-        log.info("USERNAME: {}", username);
-        log.info("PASSWORD is null: {}", password == null);
-        log.info("PASSWORD length: {}", password != null ? password.length() : 0);
-        log.info(password);
-        log.info("==========================");
-
         HikariConfig config = new HikariConfig();
         config.setJdbcUrl(url);
         config.setUsername(username);
