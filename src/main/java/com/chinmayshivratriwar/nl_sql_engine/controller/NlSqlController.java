@@ -4,9 +4,11 @@ import com.chinmayshivratriwar.nl_sql_engine.model.QueryRequest;
 import com.chinmayshivratriwar.nl_sql_engine.model.QueryResponse;
 import com.chinmayshivratriwar.nl_sql_engine.service.NlSqlService;
 import com.chinmayshivratriwar.nl_sql_engine.service.RateLimiterService;
+import com.chinmayshivratriwar.nl_sql_engine.service.SchemaService;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -18,8 +20,12 @@ import org.springframework.web.bind.annotation.*;
 @Slf4j
 public class NlSqlController {
 
+    @Value("${app.schema.access.key}")
+    private String schemaAccessKey;
+
     private final NlSqlService nlSqlService;
     private final RateLimiterService rateLimiterService;
+    private final SchemaService schemaService;
 
     @PostMapping
     public ResponseEntity<?> query(
@@ -42,6 +48,18 @@ public class NlSqlController {
     @GetMapping("/health")
     public ResponseEntity<String> health() {
         return ResponseEntity.ok("nl-sql-engine is running");
+    }
+
+    @GetMapping("/schema")
+    public ResponseEntity<?> getSchema(
+            @RequestHeader(value = "X-Internal-Key", required = true) String internalKey) {
+
+        if (internalKey == null || !internalKey.equals(schemaAccessKey)) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body("Access denied.");
+        }
+
+        String schema = schemaService.extractSchema();
+        return ResponseEntity.ok(schema);
     }
 
     private String getClientIP(HttpServletRequest request) {
