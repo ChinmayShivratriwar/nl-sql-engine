@@ -1,8 +1,11 @@
 package com.chinmayshivratriwar.nl_sql_engine.service;
 
+import com.chinmayshivratriwar.nl_sql_engine.datasource.ConnectionPoolRegistry;
 import com.chinmayshivratriwar.nl_sql_engine.llm.factory.LLMFactory;
+import com.chinmayshivratriwar.nl_sql_engine.model.DatabaseCredentials;
 import com.chinmayshivratriwar.nl_sql_engine.model.QueryRequest;
 import com.chinmayshivratriwar.nl_sql_engine.model.QueryResponse;
+import com.chinmayshivratriwar.nl_sql_engine.session.SessionService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
@@ -11,6 +14,8 @@ import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 
 import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -21,27 +26,53 @@ public class NlSqlService {
     private final SchemaService schemaService;
     private final SqlExecutorService sqlExecutorService;
     private final LLMFactory llmFactory;
+    private final ConnectionPoolRegistry connectionPoolRegistry;
+    private final DynamicDataSourceService dynamicDataSourceService;
+    private final SessionService sessionService;
 
     @Cacheable(value = "sqlCache", key = "#request.question")
     public QueryResponse processQuery(QueryRequest request) {
         long start = System.currentTimeMillis();
 
         try {
-            String schema = schemaService.extractSchema();
+            // Resolve credentials — from session token or use default DB
+            DatabaseCredentials credentials = null;
+            boolean isDynamicDb = request.getSessionToken() != null;
+
+            if (isDynamicDb) {
+                try {
+                    credentials = sessionService.resolve(request.getSessionToken());
+                } catch (RuntimeException e) {
+                    return QueryResponse.builder()
+                            .question(request.getQuestion())
+                            .error(e.getMessage())
+                            .executionTimeMs(System.currentTimeMillis() - start)
+                            .build();
+                }
+            }
+
+            // Extract schema
+            String schema = isDynamicDb
+                    ? schemaService.extractSchema(
+                    connectionPoolRegistry.getOrCreatePool(credentials))
+                    : schemaService.extractSchema();
+
             String generatedSql = generateSql(request.getQuestion(), schema);
             String cleanSql = cleanSql(generatedSql);
-            cleanSql = fixGroupBy(cleanSql);
+            String fixedSql = fixGroupBy(cleanSql);
 
-            log.info("Generated SQL: {}", cleanSql);
+            log.info("Generated SQL: {}", fixedSql);
 
-            var results = sqlExecutorService.execute(cleanSql);
-            long executionTime = System.currentTimeMillis() - start;
+            // Execute
+            List<Map<String, Object>> results = isDynamicDb
+                    ? dynamicDataSourceService.executeQuery(credentials, fixedSql)
+                    : sqlExecutorService.execute(fixedSql);
 
             return QueryResponse.builder()
                     .question(request.getQuestion())
-                    .generatedSql(cleanSql)
+                    .generatedSql(fixedSql)
                     .results(results)
-                    .executionTimeMs(executionTime)
+                    .executionTimeMs(System.currentTimeMillis() - start)
                     .fromCache(false)
                     .build();
 
