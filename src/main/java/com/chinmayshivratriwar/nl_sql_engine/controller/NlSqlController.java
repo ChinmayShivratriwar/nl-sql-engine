@@ -1,10 +1,14 @@
 package com.chinmayshivratriwar.nl_sql_engine.controller;
 
+import com.chinmayshivratriwar.nl_sql_engine.datasource.ConnectionPoolRegistry;
+import com.chinmayshivratriwar.nl_sql_engine.model.DatabaseCredentials;
 import com.chinmayshivratriwar.nl_sql_engine.model.QueryRequest;
 import com.chinmayshivratriwar.nl_sql_engine.model.QueryResponse;
+import com.chinmayshivratriwar.nl_sql_engine.service.DynamicDataSourceService;
 import com.chinmayshivratriwar.nl_sql_engine.service.NlSqlService;
 import com.chinmayshivratriwar.nl_sql_engine.service.RateLimiterService;
 import com.chinmayshivratriwar.nl_sql_engine.service.SchemaService;
+import com.chinmayshivratriwar.nl_sql_engine.session.SessionService;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -13,10 +17,14 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import javax.sql.DataSource;
+import java.util.Map;
+
 @RestController
 @RequestMapping("/api/v1/query")
 @RequiredArgsConstructor
-@CrossOrigin(origins = "*")
+@CrossOrigin(origins = "https://nl-sql-client.vercel.app") //TODO: Read from @Value, using WebMvcConfigurer.
+//the url is public anayway, so for the sake of no overengineering, i am hardcoding it here.
 @Slf4j
 public class NlSqlController {
 
@@ -26,6 +34,9 @@ public class NlSqlController {
     private final NlSqlService nlSqlService;
     private final RateLimiterService rateLimiterService;
     private final SchemaService schemaService;
+    private final DynamicDataSourceService dynamicDataSourceService;
+    private final SessionService sessionService;
+    private final ConnectionPoolRegistry connectionPoolRegistry;
 
     @PostMapping
     public ResponseEntity<?> query(
@@ -68,5 +79,49 @@ public class NlSqlController {
             return forwarded.split(",")[0].trim();
         }
         return request.getRemoteAddr();
+    }
+
+    @PostMapping("/validate-connection")
+    public ResponseEntity<?> validateConnection(
+            @RequestBody DatabaseCredentials credentials) {
+        boolean valid = dynamicDataSourceService.validateConnection(credentials);
+        if (valid) {
+            return ResponseEntity.ok("Connection successful.");
+        }
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body("Could not connect. Please check your credentials.");
+
+    }
+
+    @PostMapping("/connect")
+    public ResponseEntity<?> connect(@RequestBody DatabaseCredentials credentials) {
+        log.info("Connection request for host: {}", credentials.getHost());
+
+        boolean valid = dynamicDataSourceService.validateConnection(credentials);
+        if (!valid) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body("Could not connect. Please check your credentials.");
+        }
+
+        String token = sessionService.createSession(credentials);
+
+        // Fetch schema to return immediately so frontend can display it
+        DataSource dataSource = connectionPoolRegistry.getOrCreatePool(credentials);
+        String schema = schemaService.extractSchema(dataSource);
+
+        return ResponseEntity.ok(Map.of(
+                "sessionToken", token,
+                "expiresInMinutes", 30,
+                "schema", schema
+        ));
+    }
+
+    @PostMapping("/disconnect")
+    public ResponseEntity<?> disconnect(@RequestBody Map<String, String> body) {
+        String token = body.get("sessionToken");
+        if (token != null) {
+            sessionService.invalidateSession(token);
+        }
+        return ResponseEntity.ok("Disconnected successfully.");
     }
 }
