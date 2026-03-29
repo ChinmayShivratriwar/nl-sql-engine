@@ -1,0 +1,168 @@
+@startuml
+skinparam backgroundColor #0d1117
+skinparam defaultFontColor #e2e8f0
+skinparam defaultFontSize 11
+skinparam defaultFontName "Segoe UI"
+skinparam linetype ortho
+skinparam nodesep 80
+skinparam ranksep 100
+
+skinparam rectangle {
+    BackgroundColor #0f172a
+    BorderColor #3b82f6
+    FontColor #e2e8f0
+    BorderThickness 1.5
+    RoundCorner 10
+}
+
+skinparam note {
+    BackgroundColor #1e293b
+    BorderColor #334155
+    FontColor #94a3b8
+}
+
+skinparam arrow {
+    Color #3b82f6
+    FontColor #64748b
+    FontSize 10
+}
+
+title NL-SQL Engine — Low Level Design\nSpring Boot 3.5 · Spring AI 1.0 · Java 21
+
+actor "User\n(React UI — Vercel)" as User #1d4ed8
+
+package "API Layer" #0f172a {
+    rectangle "**NlSqlController**\n@RestController\n/api/v1/query\n─────────────────\nExtracts client IP\nDelegates to service\n/connect · /disconnect\n/validate-connection" as Controller
+}
+
+rectangle "**RateLimiterService**\nBucket4j — Token Bucket\n─────────────────\n10 req / min / IP\nConcurrentHashMap<IP, Bucket>\n429 on breach" as RateLimiter #1a0a0a
+
+package "Session Layer" #0f172a {
+    rectangle "**SessionService**\n─────────────────\nUUID opaque token generation\nConcurrentHashMap<token, entry>\nIdle eviction every 5 mins\nHard reset every 14 mins\nTODO: Replace with Redis + JWT" as SessionService #1a0a2a
+
+    rectangle "**ConnectionPoolRegistry**\n─────────────────\nHikariCP pool per connection string\nConcurrentHashMap<key, PoolEntry>\nIdle eviction every 5 mins\nHard reset every 14 mins\nSSL auto-detect (local vs prod)\nTODO: Redis coordination for multi-instance" as PoolRegistry #1a0a2a
+}
+
+package "Service Layer" #0f172a {
+    rectangle "**NlSqlService**\n@Cacheable (Caffeine)\n─────────────────\nCore orchestrator\n500 entries · 10min TTL\nCache key = question\nHIT → <5ms · MISS → full pipeline\nRoutes to default or user DB" as NlSqlService #1a0a1a
+
+    rectangle "**SchemaService**\n─────────────────\nDynamic schema extraction\ninformation_schema.tables\ninformation_schema.columns\nAccepts JdbcTemplate — default or user DB\nZero config — auto-discovers all tables" as SchemaService
+
+    rectangle "**DynamicDataSourceService**\n─────────────────\nValidates user DB connection\nExecutes queries on user DB\nDelegates schema to SchemaService" as DynamicDS
+
+    rectangle "**SqlExecutorService**\n─────────────────\nSQL safety + execution\nBlocks: DROP · DELETE · TRUNCATE\nBlocks multiple statements\nBlocks aggregation without GROUP BY\nJdbcTemplate.queryForList()" as SqlExecutor
+}
+
+package "LLM Layer" #0f172a {
+    rectangle "**LLMStrategyFactory**\nFactory Pattern\n─────────────────\nResolves provider from env\napp.llm.provider=groq|ollama\nZero code change to switch" as LLMFactory #1a1200
+
+    interface "**LLMStrategy**\n─────────────\ngenerateSQL(prompt): String" as LLMStrategy
+
+    rectangle "**OllamaIntegration**\n[LOCAL ONLY]\n─────────────────\nOllamaChatModel injection\ntemperature=0.0\nnumPredict=300\nMistral 7B / phi3:mini" as Ollama #0a0a0a
+
+    rectangle "**GroqIntegration**\n[PRODUCTION]\n─────────────────\nOpenAiChatModel → Groq URL\nllama-3.3-70b-versatile\nInjects LLMRateLimiter" as Groq #0a0a1a
+}
+
+package "Rate Limiting — LLM" #0f172a {
+    interface "**LLMRateLimiter**\n─────────────────\nvalidateAndConsume(): void" as LLMRateLimiter
+
+    rectangle "**GroqRateLimiter**\n─────────────────\n25 req / min\n300 req / day\nAtomicInteger counters\nAuto-reset time windows" as GroqRateLimiter #1a0800
+}
+
+package "Infrastructure" #0f172a {
+    database "**PostgreSQL (Default)**\nSupabase — Pooler Port 6543\n─────────────────\nHikariCP connection pool\nsslmode=require" as DB
+
+    database "**PostgreSQL (User DB)**\nAny user-provided database\n─────────────────\nHikariCP pool from registry\nSSL auto-detected\nSession token resolves credentials" as UserDB
+
+    rectangle "**DataSourceConfig**\n─────────────────\nReads DB_URL · DB_USERNAME\nDB_PASSWORD from env\nHikariCP tuning" as DSConfig
+
+    rectangle "**CacheConfig**\n─────────────────\nCaffeine CacheManager\nmaximumSize=500\nexpireAfterWrite=10m\nrecordStats=true" as CacheConfig
+}
+
+' ── Request flow ──
+User -[#3b82f6]-> Controller : POST /api/v1/query\n{ question, sessionToken? }
+Controller -[#ef4444]-> RateLimiter : tryConsume(ip)
+RateLimiter -[#ef4444]-> Controller : 429 if exceeded
+Controller -[#3b82f6]-> NlSqlService : processQuery(request)
+
+' ── Plug and play connect flow ──
+User -[#a855f7]-> Controller : POST /connect\n{ host, port, db, user, pass }
+Controller -[#a855f7]-> DynamicDS : validateConnection()
+DynamicDS -[#a855f7]-> PoolRegistry : getOrCreatePool()
+PoolRegistry -[#a855f7]-> UserDB : HikariCP connect
+Controller -[#a855f7]-> SessionService : createSession(credentials)
+SessionService -[#a855f7]-> Controller : UUID token
+Controller -[#a855f7]-> SchemaService : extractSchema(userDataSource)
+Controller -[#a855f7]-> User : { sessionToken, schema, expiresIn }
+
+' ── Disconnect flow ──
+User -[#6b7280]-> Controller : POST /disconnect\n{ sessionToken }
+Controller -[#6b7280]-> SessionService : invalidateSession(token)
+
+' ── Service flow — default DB ──
+NlSqlService -[#10b981]-> SchemaService : extractSchema() default
+NlSqlService -[#f59e0b]-> LLMFactory : getStrategy()
+NlSqlService -[#10b981]-> SqlExecutor : execute(sql)
+SqlExecutor -[#10b981]-> DB : JdbcTemplate query
+
+' ── Service flow — user DB ──
+NlSqlService -[#a855f7]-> SessionService : resolve(sessionToken)
+NlSqlService -[#a855f7]-> SchemaService : extractSchema(userDataSource)
+NlSqlService -[#a855f7]-> DynamicDS : executeQuery(credentials, sql)
+DynamicDS -[#a855f7]-> UserDB : JdbcTemplate query
+
+' ── LLM factory ──
+LLMFactory -[#f59e0b]-> LLMStrategy : returns
+LLMStrategy <|.. Ollama : implements
+LLMStrategy <|.. Groq : implements
+
+' ── LLM rate limiter ──
+Groq -[#f59e0b]-> LLMRateLimiter : validateAndConsume()
+LLMRateLimiter <|.. GroqRateLimiter : implements
+
+' ── Infrastructure wiring ──
+DSConfig -[#475569]-> DB : configures
+CacheConfig -[#6d28d9]-> NlSqlService : @Cacheable
+PoolRegistry -[#475569]-> UserDB : manages pools
+
+' ── Response ──
+NlSqlService -[#3b82f6]-> Controller : QueryResponse
+Controller -[#3b82f6]-> User : JSON response\n{ sql, results, timeMs, fromCache }
+
+note right of NlSqlService
+  Cache HIT path:
+  Controller → NlSqlService → return cached
+  Skips LLM + DB entirely
+  Response time < 5ms
+end note
+
+note right of SessionService
+  Plug and Play security:
+  Credentials stored server side
+  Token travels — not credentials
+  Auto eviction every 14 minutes
+  Hard reset every 14 minutes
+  TODO: JWT + Redis for multi-instance
+end note
+
+note right of Groq
+  Provider switch:
+  app.llm.provider=ollama → local dev
+  app.llm.provider=groq → production
+  No code changes needed
+end note
+
+note bottom of SqlExecutor
+  Defense in depth:
+  1. Prompt instructs LLM against destructive SQL
+  2. SqlExecutorService blocks at runtime
+  3. Auto GROUP BY correction
+end note
+
+note bottom of PoolRegistry
+  TODO: MULTI-INSTANCE PROBLEM
+  In-memory pool per instance.
+  Replace with Redis coordination
+  layer when scaling horizontally.
+end note
+@enduml
