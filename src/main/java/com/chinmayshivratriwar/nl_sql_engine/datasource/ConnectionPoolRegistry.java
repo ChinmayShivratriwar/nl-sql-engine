@@ -1,6 +1,8 @@
 package com.chinmayshivratriwar.nl_sql_engine.datasource;
 
 import com.chinmayshivratriwar.nl_sql_engine.model.DatabaseCredentials;
+import com.chinmayshivratriwar.nl_sql_engine.model.SchemaGraph;
+import com.chinmayshivratriwar.nl_sql_engine.service.SchemaIndexingService;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import lombok.extern.slf4j.Slf4j;
@@ -24,6 +26,11 @@ public class ConnectionPoolRegistry {
     // metadata is shared, but HikariCP pools remain local per instance.
     // Review this before any horizontal scaling decision.
     private final ConcurrentHashMap<String, PoolEntry> registry = new ConcurrentHashMap<>();
+    private final SchemaIndexingService schemaIndexingService;
+
+    public ConnectionPoolRegistry(SchemaIndexingService schemaIndexingService) {
+        this.schemaIndexingService = schemaIndexingService;
+    }
 
     private static final int MAX_POOL_SIZE = 3;
     private static final int CONNECTION_TIMEOUT_MS = 5000;
@@ -43,10 +50,27 @@ public class ConnectionPoolRegistry {
                 existing.close();
             }
             log.info("Creating new connection pool for key: {}", maskKey(key));
-            return new PoolEntry(createPool(credentials));
+            HikariDataSource dataSource = createPool(credentials);
+            PoolEntry poolEntry = new PoolEntry(dataSource);
+
+            // Build schema graph once, never rebuilt unless pool expires
+            SchemaGraph graph = schemaIndexingService.buildGraph(dataSource);
+            poolEntry.schemaGraph = graph;
+            log.info("Schema graph built for key: {}", maskKey(key));
+
+            return poolEntry;
         });
 
         return entry.dataSource;
+    }
+
+    public SchemaGraph getGraph(DatabaseCredentials credentials) {
+        String key = buildKey(credentials);
+        PoolEntry entry = registry.get(key);
+        if (entry == null || entry.isExpired()) {
+            throw new IllegalStateException("No active pool for credentials — call getOrCreatePool first");
+        }
+        return entry.schemaGraph;
     }
 
     private HikariDataSource createPool(DatabaseCredentials credentials) {
@@ -131,14 +155,13 @@ public class ConnectionPoolRegistry {
                 credentials.getUsername();
     }
 
-    // Mask key in logs for security
     private String maskKey(String key) {
         return key.substring(0, Math.min(10, key.length())) + "***";
     }
 
-    // ── Inner class ──
     private static class PoolEntry {
         final HikariDataSource dataSource;
+        volatile SchemaGraph schemaGraph;
         volatile LocalDateTime lastAccessedAt;
 
         PoolEntry(HikariDataSource dataSource) {
@@ -160,6 +183,7 @@ public class ConnectionPoolRegistry {
             if (dataSource != null && !dataSource.isClosed()) {
                 dataSource.close();
             }
+            schemaGraph = null;
         }
     }
 }

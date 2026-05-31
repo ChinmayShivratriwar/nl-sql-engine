@@ -23,7 +23,7 @@ import java.util.Map;
 @RestController
 @RequestMapping("/api/v1/query")
 @RequiredArgsConstructor
-@CrossOrigin(origins = "https://nl-sql-client.vercel.app") //TODO: Read from @Value, using WebMvcConfigurer.
+@CrossOrigin(origins = "*") //TODO: Read from @Value, using WebMvcConfigurer.
 //the url is public anayway, so for the sake of no overengineering, i am hardcoding it here.
 @Slf4j
 public class NlSqlController {
