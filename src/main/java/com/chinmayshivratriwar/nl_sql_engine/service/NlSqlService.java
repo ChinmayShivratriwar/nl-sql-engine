@@ -1,5 +1,6 @@
 package com.chinmayshivratriwar.nl_sql_engine.service;
 
+import com.chinmayshivratriwar.nl_sql_engine.config.DefaultSchemaGraphHolder;
 import com.chinmayshivratriwar.nl_sql_engine.datasource.ConnectionPoolRegistry;
 import com.chinmayshivratriwar.nl_sql_engine.llm.factory.LLMFactory;
 import com.chinmayshivratriwar.nl_sql_engine.model.*;
@@ -28,6 +29,7 @@ public class NlSqlService {
     private final DynamicDataSourceService dynamicDataSourceService;
     private final SessionService sessionService;
     private final SchemaRetrievalService schemaRetrievalService;
+    private final DefaultSchemaGraphHolder defaultSchemaGraphHolder;
 
     @Cacheable(value = "sqlCache", key = "#request.question")
     public QueryResponse processQuery(QueryRequest request) {
@@ -62,7 +64,10 @@ public class NlSqlService {
                 schema = retrieval.schemaText();
                 retrievedTables = retrieval.retrievedTables();
             } else {
-                schema = schemaService.extractSchema();
+                SchemaGraph graph = defaultSchemaGraphHolder.getGraph();
+                RetrievalResult retrieval = schemaRetrievalService.retrieve(graph, request.getQuestion());
+                schema = retrieval.schemaText();
+                retrievedTables = retrieval.retrievedTables();
             }
 
             String generatedSql = generateSql(request.getQuestion(), schema);

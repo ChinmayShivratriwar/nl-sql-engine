@@ -1,0 +1,237 @@
+@startuml
+skinparam backgroundColor #fafafa
+skinparam defaultFontColor #1e293b
+skinparam defaultFontSize 11
+skinparam defaultFontName "Segoe UI"
+skinparam linetype ortho
+skinparam nodesep 120
+skinparam ranksep 160
+skinparam rectanglePadding 15
+
+skinparam rectangle {
+    BackgroundColor #ffffff
+    BorderColor #3b82f6
+    FontColor #1e293b
+    BorderThickness 1.5
+    RoundCorner 10
+}
+
+skinparam note {
+    BackgroundColor #f1f5f9
+    BorderColor #cbd5e1
+    FontColor #475569
+}
+
+skinparam arrow {
+    Color #3b82f6
+    FontColor #64748b
+    FontSize 10
+}
+
+skinparam package {
+    BackgroundColor #f8fafc
+    BorderColor #e2e8f0
+    FontColor #334155
+}
+
+skinparam database {
+    BackgroundColor #ffffff
+    BorderColor #3b82f6
+    FontColor #1e293b
+}
+
+skinparam cloud {
+    BackgroundColor #ffffff
+    BorderColor #3b82f6
+    FontColor #1e293b
+}
+
+skinparam actor {
+    BackgroundColor #dbeafe
+    BorderColor #3b82f6
+    FontColor #1e40af
+}
+
+title NL-SQL Engine — Low Level Design\nSpring Boot 3.5 · Spring AI 1.0 · Java 21
+
+actor "User\n(React UI — Vercel)" as User
+
+package "API Layer" {
+    rectangle "**NlSqlController**\n@RestController\n/api/v1/query\n─────────────────\nExtracts client IP\nDelegates to service\n/connect · /disconnect\n/validate-connection" as Controller
+}
+
+rectangle "**RateLimiterService**\nBucket4j — Token Bucket\n─────────────────\n10 req / min / IP\nConcurrentHashMap<IP, Bucket>\n429 on breach" as RateLimiter
+
+package "Session Layer" {
+    rectangle "**SessionService**\n─────────────────\nUUID opaque token generation\nConcurrentHashMap<token, entry>\nIdle eviction every 5 mins\nHard reset every 14 mins\nTODO: Replace with Redis + JWT" as SessionService
+
+    rectangle "**ConnectionPoolRegistry**\n─────────────────\nHikariCP pool per connection string\nConcurrentHashMap<key, PoolEntry>\nPoolEntry owns DataSource + SchemaGraph\nGraph built once at pool creation\nGraph nulled on pool eviction\nIdle eviction every 5 mins\nHard reset every 14 mins\nSSL auto-detect (local vs prod)\nTODO: Redis coordination for multi-instance" as PoolRegistry
+}
+
+package "Service Layer" {
+    rectangle "**NlSqlService**\n@Cacheable (Caffeine)\n─────────────────\nCore orchestrator\n500 entries · 10min TTL\nCache key = question\nHIT → <5ms · MISS → full pipeline\nRoutes to default or user DB" as NlSqlService
+
+    rectangle "**SchemaService**\n─────────────────\nDynamic schema extraction\ninformation_schema.tables\ninformation_schema.columns\nAccepts JdbcTemplate — default or user DB\nZero config — auto-discovers all tables" as SchemaService
+
+    rectangle "**DynamicDataSourceService**\n─────────────────\nValidates user DB connection\nExecutes queries on user DB\nDelegates schema to SchemaService" as DynamicDS
+
+    rectangle "**SqlExecutorService**\n─────────────────\nSQL safety + execution\nBlocks: DROP · DELETE · TRUNCATE\nBlocks multiple statements\nBlocks aggregation without GROUP BY\nJdbcTemplate.queryForList()" as SqlExecutor
+}
+
+package "GraphRAG Layer" {
+    rectangle "**SchemaIndexingService**\n─────────────────\nCalled once at pool creation\nDatabaseMetaData extraction\nTables → columns → FK relationships\nBuilds semantic chunk per table\nEmbeds each chunk via EmbeddingClient\nReturns SchemaGraph (nodes + edges)" as SchemaIndexing
+
+    rectangle "**SchemaRetrievalService**\n─────────────────\nEmbeds user question\nCosine similarity → TopK seed tables\nDynamic TopK: Math.max(1, tables/3)\nThreshold filter: score >= 0.35\nBidirectional BFS on FK edges\nDynamic depth: min(4, max(2, diameter/2))\nReturns relevant schemas + table names" as SchemaRetrieval
+
+    rectangle "**SchemaGraph**\n[In-Memory · Per PoolEntry]\n─────────────────\nMap<tableName, TableNode>\nMap<tableName, List<SchemaEdge>>\nBidirectional edge traversal\ncomputeDiameter() for BFS depth\nnodeCount() for TopK scaling\nGC'd when PoolEntry evicted" as SchemaGraphComp
+
+    rectangle "**CohereEmbeddingClient**\nimplements EmbeddingModel\n─────────────────\nCustom HTTP client — Java HttpClient\nembed-english-light-v3.0 · 1024 dimensions\nPOST api.cohere.com/v2/embed\ninput_type=search_document\nembeddings.float[] response\nConverts to float[] for cosine similarity" as EmbeddingClient
+}
+
+package "LLM Layer" {
+    rectangle "**LLMStrategyFactory**\nFactory Pattern\n─────────────────\nResolves provider from env\napp.llm.provider=groq|ollama\nZero code change to switch" as LLMFactory
+
+    interface "**LLMStrategy**\n─────────────\ngenerateSQL(prompt): String" as LLMStrategy
+
+    rectangle "**OllamaIntegration**\n[LOCAL ONLY]\n─────────────────\nOllamaChatModel injection\ntemperature=0.0\nnumPredict=300\nMistral 7B / phi3:mini" as Ollama
+
+    rectangle "**GroqIntegration**\n[PRODUCTION]\n─────────────────\nOpenAiChatModel → Groq URL\nllama-3.3-70b-versatile\nInjects LLMRateLimiter" as Groq
+}
+
+package "Rate Limiting — LLM" {
+    interface "**LLMRateLimiter**\n─────────────────\nvalidateAndConsume(): void" as LLMRateLimiter
+
+    rectangle "**GroqRateLimiter**\n─────────────────\n25 req / min\n300 req / day\nAtomicInteger counters\nAuto-reset time windows" as GroqRateLimiter
+}
+
+package "Infrastructure" {
+    database "**PostgreSQL (Default)**\nSupabase — Pooler Port 6543\n─────────────────\nHikariCP connection pool\nsslmode=require" as DB
+
+    database "**PostgreSQL (User DB)**\nAny user-provided database\n─────────────────\nHikariCP pool from registry\nSSL auto-detected\nSession token resolves credentials" as UserDB
+
+    cloud "**Cohere Inference API**\napi.cohere.com/v2/embed\n─────────────────\nembed-english-light-v3.0\nFree trial tier · 1024-dim vectors\nCalled at index time only" as CohereCloud
+
+    rectangle "**DataSourceConfig**\n─────────────────\nReads DB_URL · DB_USERNAME\nDB_PASSWORD from env\nHikariCP tuning" as DSConfig
+
+    rectangle "**CacheConfig**\n─────────────────\nCaffeine CacheManager\nmaximumSize=500\nexpireAfterWrite=10m\nrecordStats=true" as CacheConfig
+}
+
+' ── Request flow ──
+User -[#3b82f6]-> Controller : POST /api/v1/query\n{ question, sessionToken? }
+Controller -[#ef4444]-> RateLimiter : tryConsume(ip)
+RateLimiter -[#ef4444]-> Controller : 429 if exceeded
+Controller -[#3b82f6]-> NlSqlService : processQuery(request)
+
+' ── Plug and play connect flow ──
+User -[#a855f7]-> Controller : POST /connect\n{ host, port, db, user, pass }
+Controller -[#a855f7]-> DynamicDS : validateConnection()
+DynamicDS -[#a855f7]-> PoolRegistry : getOrCreatePool()
+PoolRegistry -[#a855f7]-> UserDB : HikariCP connect
+PoolRegistry -[#22c55e]-> SchemaIndexing : buildGraph(dataSource)
+SchemaIndexing -[#22c55e]-> EmbeddingClient : embed(chunkText) per table
+EmbeddingClient -[#22c55e]-> CohereCloud : POST /v2/embed
+CohereCloud -[#22c55e]-> EmbeddingClient : float[] vectors
+SchemaIndexing -[#22c55e]-> SchemaGraphComp : build nodes + edges
+SchemaGraphComp -[#22c55e]-> PoolRegistry : stored in PoolEntry
+Controller -[#a855f7]-> SessionService : createSession(credentials)
+SessionService -[#a855f7]-> Controller : UUID token
+Controller -[#a855f7]-> User : { sessionToken, expiresIn }
+
+' ── Disconnect flow ──
+User -[#6b7280]-> Controller : POST /disconnect\n{ sessionToken }
+Controller -[#6b7280]-> SessionService : invalidateSession(token)
+
+' ── Service flow — default DB ──
+NlSqlService -[#10b981]-> SchemaService : extractSchema() default
+NlSqlService -[#f59e0b]-> LLMFactory : getStrategy()
+NlSqlService -[#10b981]-> SqlExecutor : execute(sql)
+SqlExecutor -[#10b981]-> DB : JdbcTemplate query
+
+' ── Service flow — user DB with RAG ──
+NlSqlService -[#a855f7]-> SessionService : resolve(sessionToken)
+NlSqlService -[#22c55e]-> PoolRegistry : getGraph(credentials)
+PoolRegistry -[#22c55e]-> NlSqlService : SchemaGraph (cached)
+NlSqlService -[#22c55e]-> SchemaRetrieval : retrieve(graph, question)
+SchemaRetrieval -[#22c55e]-> EmbeddingClient : embed(question)
+SchemaRetrieval -[#22c55e]-> SchemaGraphComp : similaritySearch\n→ TopK seeds\n→ BFS expand
+SchemaRetrieval -[#22c55e]-> NlSqlService : relevant schemas\n+ retrievedTables[]
+NlSqlService -[#a855f7]-> DynamicDS : executeQuery(credentials, sql)
+DynamicDS -[#a855f7]-> UserDB : JdbcTemplate query
+SqlExecutor -[#a855f7]-> DynamicDS : executeQuery(credentials, sql)
+
+' ── LLM factory ──
+LLMFactory -[#f59e0b]-> LLMStrategy : returns
+LLMStrategy <|.. Ollama : implements
+LLMStrategy <|.. Groq : implements
+
+' ── LLM rate limiter ──
+Groq -[#f59e0b]-> LLMRateLimiter : validateAndConsume()
+LLMRateLimiter <|.. GroqRateLimiter : implements
+
+' ── Infrastructure wiring ──
+DSConfig -[#475569]-> DB : configures
+CacheConfig -[#6d28d9]-> NlSqlService : @Cacheable
+PoolRegistry -[#475569]-> UserDB : manages pools
+
+' ── Response ──
+NlSqlService -[#3b82f6]-> Controller : QueryResponse
+Controller -[#3b82f6]-> User : JSON response\n{ sql, results, timeMs,\nfromCache, retrievedTables,\ntotalTables }
+
+note right of NlSqlService
+  Cache HIT path:
+  Controller → NlSqlService → return cached
+  Skips LLM + DB entirely
+  Response time < 5ms
+end note
+
+note right of SessionService
+  Plug and Play security:
+  Credentials stored server side
+  Token travels — not credentials
+  Auto eviction every 14 minutes
+  Hard reset every 14 minutes
+  TODO: JWT + Redis for multi-instance
+end note
+
+note right of Groq
+  Provider switch:
+  app.llm.provider=ollama → local dev
+  app.llm.provider=groq → production
+  No code changes needed
+end note
+
+note bottom of SqlExecutor
+  Defense in depth:
+  1. Prompt instructs LLM against destructive SQL
+  2. SqlExecutorService blocks at runtime
+  3. Auto GROUP BY correction
+end note
+
+note bottom of PoolRegistry
+  PoolEntry owns both DataSource + SchemaGraph
+  Graph built once at connection time
+  Graph nulled automatically on pool eviction
+  Zero repeated DB metadata extraction per query
+  TODO: Redis coordination for multi-instance
+end note
+
+note right of SchemaRetrieval
+  GraphRAG retrieval pipeline:
+  1. Embed question → float[1024]
+  2. Cosine similarity → TopK seeds
+     TopK = Math.max(1, tables/3)
+     Threshold = 0.35 (embed-english-light-v3.0)
+  3. BFS on FK edges — bidirectional
+     Depth = min(4, max(2, diameter/2))
+  4. ~85% token reduction vs full schema
+  5. retrievedTables[] returned for UI badge
+end note
+
+note bottom of SchemaGraphComp
+  Multi-tenant isolation:
+  Each user DB = separate SchemaGraph
+  Isolated inside its own PoolEntry
+  graph = registry.get(credentials)
+  Cannot access another user's graph
+end note
+@enduml
