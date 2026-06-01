@@ -2,9 +2,7 @@ package com.chinmayshivratriwar.nl_sql_engine.service;
 
 import com.chinmayshivratriwar.nl_sql_engine.datasource.ConnectionPoolRegistry;
 import com.chinmayshivratriwar.nl_sql_engine.llm.factory.LLMFactory;
-import com.chinmayshivratriwar.nl_sql_engine.model.DatabaseCredentials;
-import com.chinmayshivratriwar.nl_sql_engine.model.QueryRequest;
-import com.chinmayshivratriwar.nl_sql_engine.model.QueryResponse;
+import com.chinmayshivratriwar.nl_sql_engine.model.*;
 import com.chinmayshivratriwar.nl_sql_engine.session.SessionService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -29,10 +27,13 @@ public class NlSqlService {
     private final ConnectionPoolRegistry connectionPoolRegistry;
     private final DynamicDataSourceService dynamicDataSourceService;
     private final SessionService sessionService;
+    private final SchemaRetrievalService schemaRetrievalService;
 
     @Cacheable(value = "sqlCache", key = "#request.question")
     public QueryResponse processQuery(QueryRequest request) {
         long start = System.currentTimeMillis();
+        String schema;
+        List<String> retrievedTables = List.of();
 
         try {
             // Resolve credentials — from session token or use default DB
@@ -51,11 +52,18 @@ public class NlSqlService {
                 }
             }
 
-            // Extract schema
-            String schema = isDynamicDb
-                    ? schemaService.extractSchema(
-                    connectionPoolRegistry.getOrCreatePool(credentials))
-                    : schemaService.extractSchema();
+            if (isDynamicDb) {
+                // Pool already exists from connection step — no DB hit
+                // Graph already built — no extraction
+                // Only relevant tables retrieved — no token bloat
+                connectionPoolRegistry.getOrCreatePool(credentials);   // ensure pool exists
+                SchemaGraph graph = connectionPoolRegistry.getGraph(credentials);
+                RetrievalResult retrieval = schemaRetrievalService.retrieve(graph, request.getQuestion());
+                schema = retrieval.schemaText();
+                retrievedTables = retrieval.retrievedTables();
+            } else {
+                schema = schemaService.extractSchema();
+            }
 
             String generatedSql = generateSql(request.getQuestion(), schema);
             String cleanSql = cleanSql(generatedSql);
@@ -72,6 +80,7 @@ public class NlSqlService {
                     .question(request.getQuestion())
                     .generatedSql(fixedSql)
                     .results(results)
+                    .retrievedTables(retrievedTables)
                     .executionTimeMs(System.currentTimeMillis() - start)
                     .fromCache(false)
                     .build();

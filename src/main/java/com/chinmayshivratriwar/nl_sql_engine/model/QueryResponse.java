@@ -14,4 +14,5 @@ public class QueryResponse {
     private long executionTimeMs;
     private boolean fromCache;
     private String error;
+    private List<String> retrievedTables;
 }
