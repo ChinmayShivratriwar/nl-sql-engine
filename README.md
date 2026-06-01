@@ -58,8 +58,8 @@ NlSqlService (@Cacheable — Caffeine)
       │
       └──► QueryResponse { question, generatedSql, results, executionTimeMs, fromCache }
 ```
-![LLD Diagram](docs/lld.png)
-> Full LLD diagram: [docs/lld.puml](docs/lld.puml)
+![LLD Diagram](docs/rag_lld.png)
+> Full LLD diagram: [docs/lld.puml](docs/rag-lld.puml)
 ---
 
 ## Design Decisions
